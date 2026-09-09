@@ -27,6 +27,7 @@
 | `ocrmon.exe` | 框选屏幕区域 → 持续打印该区域识别出的文字 |
 | `ocrwatch.exe` | 监听屏幕/图片，出现指定关键字就执行命令并退出（退出码区分结果） |
 | `region_picker.exe` | 全屏框选，把 `--rect=x,y,w,h` 输出到终端并复制到剪贴板 |
+| `screen_point_picker.exe` | 半透明全屏选点；记录并标注点击坐标，同时让点击正常落到下层窗口 |
 | `api_demo.exe` | SDK 用法示例（file / pick / watch 三个子命令） |
 
 常用参数（三个 OCR 工具通用）：
@@ -267,9 +268,12 @@ cmake --build build -j 8
 ```powershell
 build\ppocr_onnx.exe   示例图片.png          # 识别单张图
 build\region_picker.exe                     # 全屏框选, 输出 --rect=x,y,w,h
+build\screen_point_picker.exe               # 记录真实点击坐标；在控制台按 Ctrl+C 退出
 build\ocrmon.exe                            # 框选后持续打印识别文字
 build\ocrwatch.exe                          # 监听屏幕, 出现关键字触发
 ```
+
+`screen_point_picker` 只观察鼠标按下事件，不拦截点击，也不处理鼠标移动、拖拽或键盘输入。左、右、中键和 X1/X2 按键都会按顺序显示在覆盖层并输出到控制台；点击仍由光标下方的真实窗口处理。按住左键再按右键（或反过来），当左右键同时处于按下状态时，工具会在传递真实点击后退出覆盖层，并执行 `pause` 保留控制台记录。工具启动时会设置 **Per-Monitor V2 DPI awareness**，因此不同显示器分别使用 100%/125%/150% 缩放时，覆盖层与点击点仍使用一致的物理屏幕坐标；运行中改变显示缩放或显示器布局也会刷新覆盖范围。可用 `--alpha=0..255` 调整遮罩透明度（默认 `96`）。
 
 > 若想从任意目录运行，把 `models/onnx` 也放到 exe 同目录，或用 `--det/--rec/--dict` 传绝对路径。
 
@@ -461,4 +465,3 @@ ocr::Rect region{ x, y, w, h };   // 坐标可用我们提供的 region_picker �
 ```
 
 这时对方**不需要**安装任何东西、不需要编译器。
-

@@ -15,6 +15,7 @@ endif()
 #   ocrwatch    : 持续截图某屏幕区域并 OCR，命中关键字后执行动作
 #   ocrmon      : 框选区域后持续打印识别文字
 #   region_picker : 全屏框选并输出 rect
+#   screen_point_picker : 点击穿透的屏幕选点与坐标记录工具
 #   api_demo    : SDK(sdk/ocr.hpp) 用法示例
 #   ocr_sdk     : 对外分发动态库 ocr.dll
 
@@ -95,6 +96,10 @@ target_link_libraries(ocrwatch PRIVATE ocr user32 gdi32)
 add_executable(region_picker src/region_picker.cpp src/region_select.cpp)
 target_link_libraries(region_picker PRIVATE user32 gdi32)
 
+# ---- 屏幕选点工具(点击穿透，只观察并记录点击) ----
+add_executable(screen_point_picker src/screen_point_picker.cpp)
+target_link_libraries(screen_point_picker PRIVATE user32 gdi32)
+
 # ---- 演示: 框选后持续 OCR ----
 add_executable(ocrmon src/ocrmon.cpp src/region_select.cpp src/screen.cpp)
 target_link_libraries(ocrmon PRIVATE ocr user32 gdi32)
@@ -120,6 +125,7 @@ target_compile_options(ocr PRIVATE -O2)
 target_compile_options(ppocr_onnx PRIVATE -O2)
 target_compile_options(ocrwatch PRIVATE -O2)
 target_compile_options(region_picker PRIVATE -O2)
+target_compile_options(screen_point_picker PRIVATE -O2)
 target_compile_options(ocrmon PRIVATE -O2)
 target_compile_options(ocr_sdk PRIVATE -O2 -static -static-libgcc -static-libstdc++)
 target_compile_options(api_demo PRIVATE -O2)
