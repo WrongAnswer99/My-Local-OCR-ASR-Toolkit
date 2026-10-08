@@ -89,5 +89,33 @@ New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
 foreach ($name in $models) {
     Copy-Item -LiteralPath (Join-Path $root "models\onnx\$name") -Destination $modelDir -Force
 }
+if($cacheText -match '(?m)^ENABLE_WHISPER:BOOL=ON\r?$'){
+    foreach($name in @('asr.dll','asr_cli.exe','asr_example.exe')){
+        if(-not (Test-Path -LiteralPath (Join-Path $build $name))){throw "Whisper build output missing $name"}
+        Copy-Item -LiteralPath (Join-Path $build $name) -Destination $dist -Force
+    }
+    foreach($entry in @(@('sdk\asr.hpp','asr.hpp'),@('src\asr_api.hpp','asr_api.hpp'),@('sdk\examples\asr_example.cpp','asr_example.cpp'),@('tools\test_asr_dist.ps1','test_asr.ps1'))){
+        Copy-Item -LiteralPath (Join-Path $root $entry[0]) -Destination (Join-Path $dist $entry[1]) -Force
+    }
+    $asrModels=Join-Path $dist 'models\whisper'
+    New-Item -ItemType Directory -Force -Path $asrModels | Out-Null
+    foreach($name in @('ggml-small-q5_1.bin','MODEL.txt','LICENSE')){
+        Copy-Item -LiteralPath (Join-Path $root "models\whisper\$name") -Destination $asrModels -Force
+    }
+    Copy-Item -LiteralPath (Join-Path $root 'docs\ASR.md') -Destination $docs -Force
+    $whisperMatch=[regex]::Match($cacheText,'(?m)^WHISPER_DIR:PATH=([^\r\n]+)')
+    if(-not $whisperMatch.Success){throw 'WHISPER_DIR missing from build cache'}
+    $whisper=Resolve-ProjectPath $whisperMatch.Groups[1].Value
+    Copy-Item -LiteralPath (Join-Path $whisper 'LICENSE') -Destination (Join-Path $dist 'Whisper-LICENSE') -Force
+    $ggmlLicense=Join-Path $whisper 'ggml\LICENSE'
+    if(-not (Test-Path -LiteralPath $ggmlLicense)){$ggmlLicense=Join-Path $whisper 'LICENSE'}
+    Copy-Item -LiteralPath $ggmlLicense -Destination (Join-Path $dist 'GGML-LICENSE') -Force
+    $audio=Join-Path $root 'tests\audio'
+    if(Test-Path -LiteralPath $audio){
+        $samples=Join-Path $dist 'asr-samples'
+        New-Item -ItemType Directory -Force -Path $samples | Out-Null
+        Get-ChildItem -LiteralPath $audio -File | Copy-Item -Destination $samples -Force
+    }
+}
 Set-Content -LiteralPath (Join-Path $dist 'runtime.txt') -Value "runtime=$Runtime" -Encoding UTF8
 Write-Host "Distribution ready: $dist ($Runtime)"

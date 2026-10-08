@@ -9,11 +9,19 @@ build/
 build-*/
 *.exe
 *.zip
+*.dll
+*.lib
+*.a
+*.obj
+*.o
+*.pdb
+*.ilk
 
 # 待分发目录(体积大, 不入库; 用 tools/make_dist.ps1 生成)
 dist/
 dist-*/
 __pycache__/
+*.py[cod]
 
 # 在 sdk/examples 里本地试运行 example/api_demo 时复制来的运行库与模型
 sdk/examples/*.dll
@@ -28,3 +36,10 @@ third_party/
 
 # 图片
 images/
+
+# ASR 生成的测试音频；保留集成测试依赖的原始 JFK 样本
+# 重新生成方法见 tests/audio/README.md
+/tests/audio/*.wav
+/tests/audio/*.mp3
+/tests/audio/*.m4a
+!/tests/audio/jfk.wav
