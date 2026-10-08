@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "ocr_device.hpp"
 
 // 前向声明 ORT 不透明类型(避免在头文件引入 onnxruntime_c_api.h)
 struct OrtEnv;
@@ -27,7 +28,8 @@ public:
     OnnxSession& operator=(OnnxSession&& other) noexcept;
 
     bool load(const std::string& modelPath, std::string& err,
-              int intraOpThreads = 0);
+              int intraOpThreads = 0, OCRDevice device = OCRDevice::CPU,
+              int gpuDeviceId = 0);
 
     bool loaded() const { return session_ != nullptr; }
     const std::string& inputName() const { return inputName_; }
@@ -41,6 +43,8 @@ public:
              std::string& err);
 
 private:
+    bool loadImpl(const std::string& modelPath, std::string& err,
+                  int intraOpThreads, OCRDevice device, int gpuDeviceId);
     void releaseAll();
     OrtEnv* env_ = nullptr;          // OrtEnv*
     OrtSession* session_ = nullptr;  // OrtSession*
@@ -48,4 +52,5 @@ private:
     OrtAllocator* allocator_ = nullptr; // OrtAllocator*
     std::string inputName_;
     std::string outputName_;
+    bool profiling_ = false;
 };

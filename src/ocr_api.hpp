@@ -46,9 +46,34 @@ typedef struct OcrImage {
 
 typedef void* OcrHandle;  // OCR 引擎句柄(内部含 det/rec 两个会话)
 
+typedef enum OcrDevice {
+    OCR_DEVICE_CPU = 0,
+    OCR_DEVICE_CUDA = 1
+} OcrDevice;
+
+// Extensible creation options. Initialize with ocr_default_options first.
+// Strings are UTF-8; NULL/empty paths select the default models.
+typedef struct OcrCreateOptions {
+    uint32_t struct_size;
+    int32_t device;
+    int32_t gpu_device_id;
+    const char* det_model;
+    const char* rec_model;
+    const char* dict;
+    int32_t norm;
+    int32_t threads;
+    int32_t det_limit;
+    double text_score;
+} OcrCreateOptions;
+
+OCR_API void ocr_default_options(OcrCreateOptions* options);
+// CUDA failures return NULL with a diagnostic; no whole-session CPU fallback.
+OCR_API OcrHandle ocr_create_ex(const OcrCreateOptions* options, char* err, int errCap);
+
 // ---------- 1) OCR 引擎(现有能力, 已可封装) ----------
 // 创建引擎: 模型参数传 NULL/"" 时使用 dll 同目录 models/onnx 下的默认 v6 tiny;
 // norm: 2=PP-OCRv6(默认) 0=PP-OCRv4; detLimit: 0=ROI 原尺寸.
+// Legacy API always uses CPU and remains binary compatible.
 OCR_API OcrHandle ocr_create(
     const char* detModel, const char* recModel, const char* dict,
     int norm, int threads, int detLimit, double textScore,

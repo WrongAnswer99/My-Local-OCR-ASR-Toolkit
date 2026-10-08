@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -143,23 +145,60 @@ OCR_API OcrHandle ocr_create(
     const char* detModel, const char* recModel, const char* dict,
     int norm, int threads, int detLimit, double textScore,
     char* err, int errCap) {
-    auto* ctx = new (std::nothrow) OcrCtx;
-    if (!ctx) { setErr(err, errCap, "out of memory"); return nullptr; }
-    std::string e;
-    OCRConfig cfg;
-    if (fillCfg(cfg, detModel, recModel, dict, norm, threads, detLimit,
-                textScore, e) != 0) {
-        delete ctx;
-        setErr(err, errCap, e);
+    OcrCreateOptions options;
+    ocr_default_options(&options);
+    options.det_model = detModel;
+    options.rec_model = recModel;
+    options.dict = dict;
+    options.norm = norm;
+    options.threads = threads;
+    options.det_limit = detLimit;
+    options.text_score = textScore;
+    return ocr_create_ex(&options, err, errCap);
+}
+
+OCR_API void ocr_default_options(OcrCreateOptions* options) {
+    if (!options) return;
+    *options = {};
+    options->struct_size = sizeof(OcrCreateOptions);
+    options->device = OCR_DEVICE_CPU;
+    options->norm = 2;
+    options->text_score = 0.5;
+}
+
+OCR_API OcrHandle ocr_create_ex(const OcrCreateOptions* options, char* err, int errCap) {
+    setErr(err, errCap, "");
+    if (!options || options->struct_size < sizeof(OcrCreateOptions)) {
+        setErr(err, errCap, "invalid OcrCreateOptions struct_size; call ocr_default_options first");
         return nullptr;
     }
-    if (!ctx->ocr.load(cfg, e)) {
-        ctx->lastErr = e;
-        setErr(err, errCap, e);
-        delete ctx;
+    if (options->device != OCR_DEVICE_CPU && options->device != OCR_DEVICE_CUDA) {
+        setErr(err, errCap, "invalid OCR device: expected OCR_DEVICE_CPU or OCR_DEVICE_CUDA");
         return nullptr;
     }
-    return ctx;
+    if (options->gpu_device_id < 0) {
+        setErr(err, errCap, "GPU device ID must be >= 0");
+        return nullptr;
+    }
+    try {
+        auto ctx = std::make_unique<OcrCtx>();
+        std::string e;
+        OCRConfig cfg;
+        fillCfg(cfg, options->det_model, options->rec_model, options->dict,
+                options->norm, options->threads, options->det_limit, options->text_score, e);
+        cfg.device = static_cast<OCRDevice>(options->device);
+        cfg.gpuDeviceId = options->gpu_device_id;
+        if (!ctx->ocr.load(cfg, e)) {
+            setErr(err, errCap, e);
+            return nullptr;
+        }
+        return ctx.release();
+    } catch (const std::exception& e) {
+        setErr(err, errCap, e.what());
+    } catch (...) {
+        setErr(err, errCap, "unexpected OCR initialization failure");
+    }
+    return nullptr;
 }
 
 OCR_API void ocr_destroy(OcrHandle h) {
@@ -373,7 +412,7 @@ OCR_API int ocr_watch(
 
 // ---------- 4) 其他 ----------
 OCR_API int ocr_version(char* buf, int cap) {
-    const char* v = "ppocr-onnx sdk 0.1 (PP-OCRv6 tiny default, onnxruntime cpu)";
+    const char* v = "ppocr-onnx sdk 0.2 (PP-OCRv6 tiny default, onnxruntime CPU/CUDA)";
     if (buf && cap > 0) std::snprintf(buf, cap, "%s", v);
     return int(std::strlen(v));
 }

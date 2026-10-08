@@ -1,8 +1,8 @@
-# PP-OCR C++ SDK（ONNX Runtime CPU 版）
+# PP-OCR C++ SDK（ONNX Runtime CPU / GPU 版）
 
 基于 PP-OCR 推理模型（默认 **PP-OCRv6 tiny**，可选 PP-OCRv4）+ ONNX Runtime 的轻量 C++ OCR 引擎与屏幕监听工具。
 
-> 开发机 Windows + MinGW g++ + CMake 构建；推理只用 CPU，不依赖 GPU，办公本可直接跑。
+> Windows + C++17 + CMake 构建；默认 CPU，支持 NVIDIA CUDA GPU。CPU 版保持无需 GPU 依赖。GPU 构建、CLI、C/C++ SDK 和发布步骤见 [GPU 使用指南](docs/GPU.md)。
 
 ---
 
@@ -37,6 +37,8 @@
 --norm=<0|2>      2=PP-OCRv6(默认, 输入 v/255); 0=PP-OCRv4(v/127.5-1)
 --det-limit=<n>   0=ROI 原尺寸直识别(默认); n>0=短边不足放大到 n(小字召回更强, 更慢)
 --threads=<n>     onnxruntime 线程数(0=自动; 建议 8)
+--device=<cpu|cuda>  推理设备，默认 cpu；gpu 是 cuda 的别名
+--gpu-device=<n>     CUDA 显卡编号，默认 0
 --score=<num>     置信度阈值(默认 0.5)
 ```
 

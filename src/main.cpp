@@ -18,6 +18,8 @@ static void usage(const char* exe) {
         "  --dict=<txt>     识别字典      (default models/onnx/v6_tiny_dict.txt)\n"
         "  --score=<num>    置信度阈值    (default 0.5)\n"
         "  --threads=<num>  onnxruntime 线程数 (default 0=自动)\n"
+        "  --device=<cpu|cuda>  推理设备 (default cpu; gpu=cuda)\n"
+        "  --gpu-device=<n>     CUDA 显卡编号 (default 0)\n"
         "  --det-limit=<n>  检测短边策略: 0=原尺寸直识别(默认); n>0=短边不足放大到 n\n"
         "  --norm=<0|2>     像素取值: 2=PP-OCRv6 系(默认, v/255); 0=PP-OCRv4 系\n"
         "  --viz=<png>      在原图上画框并保存\n",
@@ -52,6 +54,11 @@ int main(int argc, char* argv[]) {
     }
 
     OCRConfig cfg;
+    std::string deviceErr;
+    if (!parseOcrDeviceArgs(argc, argv, cfg.device, cfg.gpuDeviceId, deviceErr)) {
+        std::fprintf(stderr, "[args] %s\n", deviceErr.c_str());
+        return 1;
+    }
     cfg.detModelPath = valueOf(argc, argv, "--det",
                                "models/onnx/v6_det_tiny.onnx");
     cfg.recModelPath = valueOf(argc, argv, "--rec",
@@ -71,6 +78,7 @@ int main(int argc, char* argv[]) {
         return 2;
     }
     const auto t1 = std::chrono::steady_clock::now();
+    std::printf("backend: %s, gpu-device: %d\n", ocrDeviceName(cfg.device), cfg.gpuDeviceId);
 
     const std::vector<OCRLine> lines = ocr.runPath(imagePath, err);
     const auto t2 = std::chrono::steady_clock::now();

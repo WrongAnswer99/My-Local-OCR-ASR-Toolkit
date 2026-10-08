@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -637,14 +638,15 @@ void OCR::destroyImpl() {
 }
 
 bool OCR::load(const OCRConfig& cfg, std::string& err) {
+    err.clear();
     if (!OnnxSession::ensureInitialized(err)) return false;
     impl_->cfg = cfg;
     impl_->characters = &characters_;
 
-    if (!impl_->det.load(cfg.detModelPath, err, cfg.threads)) return false;
-    if (!impl_->rec.load(cfg.recModelPath, err, cfg.threads)) return false;
+    if (!impl_->det.load(cfg.detModelPath, err, cfg.threads, cfg.device, cfg.gpuDeviceId)) return false;
+    if (!impl_->rec.load(cfg.recModelPath, err, cfg.threads, cfg.device, cfg.gpuDeviceId)) return false;
     if (cfg.useCls && !cfg.clsModelPath.empty()) {
-        if (!impl_->cls.load(cfg.clsModelPath, err, cfg.threads)) return false;
+        if (!impl_->cls.load(cfg.clsModelPath, err, cfg.threads, cfg.device, cfg.gpuDeviceId)) return false;
     }
     if (!impl_->loadDict(err)) return false;
 
@@ -672,12 +674,15 @@ std::vector<OCRLine> OCR::runImage(const Image& src, std::string& err) {
 
     const int rawW = src.width, rawH = src.height;
     Impl::PrepInfo info;
+    const auto started = std::chrono::steady_clock::now();
     const Image work = P->preprocess(src, info);
+    const auto preprocessed = std::chrono::steady_clock::now();
 
     std::vector<DetBox> detBoxes = P->textDetect(work, err);
     if (!err.empty() && detBoxes.empty()) return {};
     detBoxes = P->filterAndSortBoxes(std::move(detBoxes), work.height,
                                      work.width);
+    const auto detected = std::chrono::steady_clock::now();
     OCR_DBG("[dbg] work=%dx%d padTop=%d ratio=%.3f detBoxes=%zu\n", work.width,
             work.height, info.padTop, info.ratioH, detBoxes.size());
 
@@ -706,7 +711,9 @@ std::vector<OCRLine> OCR::runImage(const Image& src, std::string& err) {
         crops.push_back(std::move(crop));
     }
 
+    const auto cropped = std::chrono::steady_clock::now();
     auto recRes = P->textRecognize(crops, err);
+    const auto recognized = std::chrono::steady_clock::now();
     if (!err.empty()) return {};
 
     // 输出: 把 padded 坐标映射回原图，并按置信度过滤
@@ -729,6 +736,16 @@ std::vector<OCRLine> OCR::runImage(const Image& src, std::string& err) {
             line.box[k].y = y;
         }
         lines.push_back(std::move(line));
+    }
+    const char* timing = std::getenv("OCR_TIMING");
+    if (timing && std::strcmp(timing, "1") == 0) {
+        const auto ms = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        std::fprintf(stderr, "[ocr-timing] device=%s preprocess=%.3f detect=%.3f crop=%.3f recognize=%.3f total=%.3f lines=%zu\n",
+            ocrDeviceName(P->cfg.device), ms(started, preprocessed),
+            ms(preprocessed, detected), ms(detected, cropped), ms(cropped, recognized),
+            ms(started, recognized), lines.size());
     }
     return lines;
 }

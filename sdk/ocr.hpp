@@ -20,6 +20,16 @@
 
 namespace ocr {
 
+enum class Device : int32_t { CPU = 0, CUDA = 1 };
+
+struct InitOptions {
+    std::string det, rec, dict;
+    int norm = 2, threads = 0, detLimit = 0;
+    double textScore = 0.5;
+    Device device = Device::CPU;
+    int gpuDeviceId = 0;
+};
+
 // 一条识别结果(与 C 接口 OcrLine 同语义)
 struct Line {
     std::string text;
@@ -67,6 +77,9 @@ public:
               int detLimit = 0, double textScore = 0.5,
               std::string* errOut = nullptr);
 
+    // CPU/CUDA initialization. CUDA requires the GPU runtime package.
+    bool init(const InitOptions& options, std::string* errOut = nullptr);
+
     // 识别图片文件(png/jpg/bmp), 返回识别行数; <0 失败
     int runFile(const std::string& imagePath, std::vector<Line>& out,
                 std::string* errOut = nullptr);
@@ -89,6 +102,15 @@ public:
     std::string version();
 
 private:
+    struct ApiCreateOptions {
+        uint32_t struct_size;
+        int32_t device, gpu_device_id;
+        const char* det_model;
+        const char* rec_model;
+        const char* dict;
+        int32_t norm, threads, det_limit;
+        double text_score;
+    };
     // ---- 与 C ABI 对齐的镜像结构(不依赖 ocr_api.hpp, 便于单头分发) ----
     struct ApiLine {
         char text[512];
@@ -112,6 +134,7 @@ private:
     // 函数指针
     void* (*fn_create_)(const char*, const char*, const char*, int, int, int,
                         double, char*, int) = nullptr;
+    void* (*fn_create_ex_)(const ApiCreateOptions*, char*, int) = nullptr;
     void (*fn_destroy_)(void*) = nullptr;
     const char* (*fn_error_)(void*) = nullptr;
     int (*fn_run_file_)(void*, const char*, ApiLine*, int, char*, int) = nullptr;
@@ -173,6 +196,41 @@ inline bool OCR::init(const std::string& det, const std::string& rec,
         return false;
     }
     return true;
+}
+
+inline bool OCR::init(const InitOptions& options, std::string* errOut) {
+    if (options.device != Device::CPU && options.device != Device::CUDA) {
+        if (errOut) *errOut = "invalid OCR device";
+        return false;
+    }
+    if (options.gpuDeviceId < 0) {
+        if (errOut) *errOut = "GPU device ID must be >= 0";
+        return false;
+    }
+    if (!hDll_ && !loadDll("ocr.dll", errOut)) return false;
+    if (!fn_create_ex_) {
+        if (options.device == Device::CPU)
+            return init(options.det, options.rec, options.dict, options.norm,
+                        options.threads, options.detLimit, options.textScore, errOut);
+        if (errOut) *errOut = "this ocr.dll lacks ocr_create_ex; upgrade to SDK 0.2 for CUDA";
+        return false;
+    }
+    if (handle_) { fn_destroy_(handle_); handle_ = nullptr; }
+    ApiCreateOptions api = {};
+    api.struct_size = sizeof(api);
+    api.device = static_cast<int32_t>(options.device);
+    api.gpu_device_id = options.gpuDeviceId;
+    api.det_model = options.det.empty() ? nullptr : options.det.c_str();
+    api.rec_model = options.rec.empty() ? nullptr : options.rec.c_str();
+    api.dict = options.dict.empty() ? nullptr : options.dict.c_str();
+    api.norm = options.norm;
+    api.threads = options.threads;
+    api.det_limit = options.detLimit;
+    api.text_score = options.textScore;
+    char err[512] = "";
+    handle_ = fn_create_ex_(&api, err, int(sizeof(err)));
+    if (!handle_ && errOut) *errOut = err;
+    return handle_ != nullptr;
 }
 
 inline int OCR::runFile(const std::string& imagePath, std::vector<Line>& out,
@@ -324,6 +382,9 @@ inline std::string OCR::lastErrFrom(void* h, const char* fallback) {
                : std::string(fallback);
 }
 inline bool OCR::loadProcs(std::string& err) {
+    // Optional so this header still supports older CPU-only SDK DLLs.
+    fn_create_ex_ = reinterpret_cast<decltype(fn_create_ex_)>(
+        reinterpret_cast<void*>(GetProcAddress(hDll_, "ocr_create_ex")));
 #define LOAD(name, var)                                                       \
     var = reinterpret_cast<decltype(var)>(                                     \
         reinterpret_cast<void*>(GetProcAddress(hDll_, name)));                 \

@@ -39,6 +39,7 @@ static void usage(const char* exe) {
         "  --max-frames=<n>      最多识别帧数,0=不限 (default 0)\n"
         "ocr:\n"
         "  --det=<onnx> --rec=<onnx> --dict=<txt> --score=<num> --threads=<num>\n"
+        "  --device=<cpu|cuda> --gpu-device=<n> (default cpu, GPU 0; gpu=cuda)\n"
         "  --det-limit=<n>   0=ROI 原尺寸直识别(默认); n>0=短边不足放大到 n\n"
         "  --norm=<0|2>      2=PP-OCRv6 系(默认, v/255); 0=PP-OCRv4 系\n"
         "debug:\n"
@@ -234,6 +235,11 @@ int main(int argc, char* argv[]) {
     const std::string runCmd = valueOf(argc, argv, "--run", "");
 
     OCRConfig cfg;
+    std::string deviceErr;
+    if (!parseOcrDeviceArgs(argc, argv, cfg.device, cfg.gpuDeviceId, deviceErr)) {
+        std::fprintf(stderr, "[args] %s\n", deviceErr.c_str());
+        return 1;
+    }
     cfg.detModelPath = valueOf(argc, argv, "--det", "models/onnx/v6_det_tiny.onnx");
     cfg.recModelPath = valueOf(argc, argv, "--rec", "models/onnx/v6_rec_tiny.onnx");
     cfg.dictPath = valueOf(argc, argv, "--dict", "models/onnx/v6_tiny_dict.txt");
@@ -259,6 +265,7 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "[load] %s\n", err.c_str());
         return 1;
     }
+    std::printf("backend: %s, gpu-device: %d\n", ocrDeviceName(cfg.device), cfg.gpuDeviceId);
 
     if (imageFile.empty()) {
         std::printf("watching rect=(%d,%d %dx%d), keys=%zu, interval=%dms",

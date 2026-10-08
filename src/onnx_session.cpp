@@ -6,6 +6,9 @@
 #include <onnxruntime_c_api.h>
 
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <mutex>
 
 namespace {
 
@@ -15,17 +18,44 @@ struct RuntimeHandle {
     const OrtApi* api = nullptr;
     bool ok = false;
     std::string err;
+    std::once_flag once;
+    std::once_flag cudaOnce;
+    std::wstring runtimeDir;
+    std::string cudaError;
+    std::vector<HMODULE> cudaLibraries;  // Pinned like the process-wide ORT DLL.
 
     bool init() {
+        std::call_once(once, [this] { initialize(); });
+        return ok;
+    }
+
+    bool initialize() {
         if (ok) return true;
         if (err.empty() && dll == nullptr) {
-            dll = LoadLibraryA("onnxruntime.dll");
+            // Prefer the runtime beside this module (ocr.dll for SDK users).
+            HMODULE self = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(&gModuleAnchor), &self);
+            wchar_t modulePath[32768] = {};
+            const DWORD n = GetModuleFileNameW(self, modulePath, 32768);
+            std::wstring runtimePath(modulePath, n);
+            const auto slash = runtimePath.find_last_of(L"\\/");
+            runtimePath = runtimePath.substr(0, slash + 1) + L"onnxruntime.dll";
+            if (GetFileAttributesW(runtimePath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                dll = LoadLibraryExW(runtimePath.c_str(), nullptr,
+                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+            else
+                dll = LoadLibraryA("onnxruntime.dll");
             if (!dll) {
                 err = "LoadLibrary onnxruntime.dll failed: error code " +
                       std::to_string(GetLastError()) +
                       " (请确认 dll 与可执行文件同目录)";
                 return false;
             }
+            const DWORD loadedLen = GetModuleFileNameW(dll, modulePath, 32768);
+            runtimeDir.assign(modulePath, loadedLen);
+            runtimeDir = runtimeDir.substr(0, runtimeDir.find_last_of(L"\\/") + 1);
         }
         auto getApiBase =
             (const OrtApiBase* (*)())GetProcAddress(dll, "OrtGetApiBase");
@@ -33,14 +63,54 @@ struct RuntimeHandle {
             err = "GetProcAddress(OrtGetApiBase) failed";
             return false;
         }
-        api = getApiBase()->GetApi(ORT_API_VERSION);
+        // CUDA V2 needs API 12; only use this API prefix so newer headers can
+        // also run with older released CPU/GPU DLLs (ORT >= 1.12).
+        api = getApiBase()->GetApi(12);
         if (!api) {
-            err = "OrtGetApiBase()->GetApi() returned null";
+            err = "ONNX Runtime >= 1.12 is required (C API 12 unavailable)";
             return false;
         }
         ok = true;
         return true;
     }
+    bool preloadCudaLibraries(std::string& error) {
+        std::call_once(cudaOnce, [this] {
+            // ORT and cuDNN load some dependencies by name. Preload bundled
+            // libraries by absolute path so SDK hosts in another directory do
+            // not accidentally pick a different cuDNN/CUDA from PATH.
+            const wchar_t* patterns[] = {L"cudart64_*.dll", L"cublasLt64_*.dll",
+                L"cublas64_*.dll", L"cufft64_*.dll", L"nvrtc*.dll", L"cudnn*.dll"};
+            for (const auto pattern : patterns) {
+                WIN32_FIND_DATAW file = {};
+                HANDLE search = FindFirstFileW((runtimeDir + pattern).c_str(), &file);
+                if (search == INVALID_HANDLE_VALUE) continue;
+                do {
+                    if (file.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    const auto fullPath = runtimeDir + file.cFileName;
+                    HMODULE library = LoadLibraryExW(fullPath.c_str(), nullptr,
+                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+                    if (!library) {
+                        const DWORD code = GetLastError();
+                        const int len = WideCharToMultiByte(CP_UTF8, 0, file.cFileName,
+                            -1, nullptr, 0, nullptr, nullptr);
+                        std::string name(size_t(len), '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, file.cFileName, -1,
+                            name.data(), len, nullptr, nullptr);
+                        if (!name.empty()) name.pop_back();
+                        cudaError = "Cannot load bundled CUDA dependency " + name +
+                                    " (Windows error " + std::to_string(code) + ")";
+                        break;
+                    }
+                    cudaLibraries.push_back(library);
+                } while (FindNextFileW(search, &file));
+                FindClose(search);
+                if (!cudaError.empty()) break;
+            }
+        });
+        error = cudaError;
+        return error.empty();
+    }
+    static void gModuleAnchor() {}
 };
 RuntimeHandle g_runtime;
 
@@ -48,8 +118,9 @@ RuntimeHandle g_runtime;
 std::string statusMessage(const OrtApi* api, OrtStatus* status) {
     if (!status) return "unknown error";
     const char* msg = api->GetErrorMessage(status);
+    const std::string result = msg ? std::string(msg) : "unknown error";
     api->ReleaseStatus(status);
-    return msg ? std::string(msg) : "unknown error";
+    return result;
 }
 
 size_t elementCount(const std::vector<int64_t>& dims) {
@@ -83,7 +154,8 @@ OnnxSession::~OnnxSession() { releaseAll(); }
 OnnxSession::OnnxSession(OnnxSession&& other) noexcept
     : env_(other.env_), session_(other.session_), memInfo_(other.memInfo_),
       allocator_(other.allocator_), inputName_(std::move(other.inputName_)),
-      outputName_(std::move(other.outputName_)) {
+      outputName_(std::move(other.outputName_)), profiling_(other.profiling_) {
+    other.profiling_ = false;
     other.env_ = nullptr;
     other.session_ = nullptr;
     other.memInfo_ = nullptr;
@@ -99,6 +171,8 @@ OnnxSession& OnnxSession::operator=(OnnxSession&& other) noexcept {
         allocator_ = other.allocator_;
         inputName_ = std::move(other.inputName_);
         outputName_ = std::move(other.outputName_);
+        profiling_ = other.profiling_;
+        other.profiling_ = false;
         other.env_ = nullptr;
         other.session_ = nullptr;
         other.memInfo_ = nullptr;
@@ -110,6 +184,19 @@ OnnxSession& OnnxSession::operator=(OnnxSession&& other) noexcept {
 void OnnxSession::releaseAll() {
     const OrtApi* api = g_runtime.api;
     if (!api) return;
+    if (session_ && profiling_ && allocator_) {
+        char* filename = nullptr;
+        OrtStatus* status = api->SessionEndProfiling(session_, allocator_, &filename);
+        if (status) {
+            std::fprintf(stderr, "[profile] %s\n", api->GetErrorMessage(status));
+            api->ReleaseStatus(status);
+        } else if (filename) {
+            std::fprintf(stderr, "[profile] %s\n", filename);
+            status = api->AllocatorFree(allocator_, filename);
+            if (status) api->ReleaseStatus(status);
+        }
+    }
+    profiling_ = false;
     if (session_) api->ReleaseSession(session_);
     if (env_) api->ReleaseEnv(env_);
     if (memInfo_) api->ReleaseMemoryInfo(memInfo_);
@@ -121,7 +208,22 @@ void OnnxSession::releaseAll() {
 }
 
 bool OnnxSession::load(const std::string& modelPath, std::string& err,
-                       int intraOpThreads) {
+                       int intraOpThreads, OCRDevice device, int gpuDeviceId) {
+    releaseAll();
+    err.clear();
+    if (device != OCRDevice::CPU && device != OCRDevice::CUDA) {
+        err = "invalid OCR execution device";
+        return false;
+    }
+    if (gpuDeviceId < 0) { err = "GPU device ID must be >= 0"; return false; }
+    if (!ensureInitialized(err)) return false;
+    if (loadImpl(modelPath, err, intraOpThreads, device, gpuDeviceId)) return true;
+    releaseAll();
+    return false;
+}
+
+bool OnnxSession::loadImpl(const std::string& modelPath, std::string& err,
+                           int intraOpThreads, OCRDevice device, int gpuDeviceId) {
     const OrtApi* api = g_runtime.api;
     if (!api) {
         err = g_runtime.err;
@@ -135,9 +237,64 @@ bool OnnxSession::load(const std::string& modelPath, std::string& err,
     OrtSessionOptions* opts = nullptr;
     st = api->CreateSessionOptions(&opts);
     if (st) { err = statusMessage(api, st); return false; }
+    if (const char* prefix = std::getenv("OCR_PROFILE_PREFIX")) {
+        if (*prefix) {
+            const auto slash = modelPath.find_last_of("\\/");
+            const auto name = modelPath.substr(slash == std::string::npos ? 0 : slash + 1);
+            const auto widePrefix = toWide(std::string(prefix) + "_" + name);
+            st = api->EnableProfiling(opts, widePrefix.c_str());
+            if (st) { err = statusMessage(api, st); api->ReleaseSessionOptions(opts); return false; }
+            profiling_ = true;
+        }
+    }
     if (intraOpThreads > 0) {
         st = api->SetIntraOpNumThreads(opts, intraOpThreads);
         if (st) { err = statusMessage(api, st); api->ReleaseSessionOptions(opts); return false; }
+    }
+    if (device == OCRDevice::CUDA) {
+        // Check the runtime package first: a CPU DLL must never silently
+        // turn an explicit GPU request into a CPU-only session.
+        char** providers = nullptr;
+        int count = 0;
+        st = api->GetAvailableProviders(&providers, &count);
+        if (st) {
+            err = statusMessage(api, st);
+            api->ReleaseSessionOptions(opts);
+            return false;
+        }
+        bool hasCuda = false;
+        for (int i = 0; i < count; ++i)
+            if (std::strcmp(providers[i], "CUDAExecutionProvider") == 0) hasCuda = true;
+        st = api->ReleaseAvailableProviders(providers, count);
+        if (st) {
+            err = statusMessage(api, st);
+            api->ReleaseSessionOptions(opts);
+            return false;
+        }
+        if (!hasCuda) {
+            err = "CUDAExecutionProvider unavailable: use the ONNX Runtime GPU package, "
+                  "including onnxruntime_providers_cuda.dll and onnxruntime_providers_shared.dll";
+            api->ReleaseSessionOptions(opts);
+            return false;
+        }
+        if (!g_runtime.preloadCudaLibraries(err)) {
+            api->ReleaseSessionOptions(opts);
+            return false;
+        }
+        OrtCUDAProviderOptionsV2* cuda = nullptr;
+        st = api->CreateCUDAProviderOptions(&cuda);
+        const std::string id = std::to_string(gpuDeviceId);
+        const char* keys[] = {"device_id"};
+        const char* values[] = {id.c_str()};
+        if (!st) st = api->UpdateCUDAProviderOptions(cuda, keys, values, 1);
+        if (!st) st = api->SessionOptionsAppendExecutionProvider_CUDA_V2(opts, cuda);
+        if (cuda) api->ReleaseCUDAProviderOptions(cuda);
+        if (st) {
+            err = "CUDA initialization failed (device " + id + "): " + statusMessage(api, st) +
+                  "; check NVIDIA driver, matching CUDA/cuDNN DLLs and PATH";
+            api->ReleaseSessionOptions(opts);
+            return false;
+        }
     }
     OrtMemoryInfo* memInfo = nullptr;
     st = api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo);

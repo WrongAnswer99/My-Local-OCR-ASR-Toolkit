@@ -6,11 +6,14 @@ models/
 
 # 构建产物
 build/
+build-*/
 *.exe
 *.zip
 
 # 待分发目录(体积大, 不入库; 用 tools/make_dist.ps1 生成)
 dist/
+dist-*/
+__pycache__/
 
 # 在 sdk/examples 里本地试运行 example/api_demo 时复制来的运行库与模型
 sdk/examples/*.dll

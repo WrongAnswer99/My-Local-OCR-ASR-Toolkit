@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ocr.hpp"
+#include "ocr_device.hpp"
 
 static int argPos(int argc, char* argv[], const char* key) {
     const std::string k = key;
@@ -22,27 +23,43 @@ static int argPos(int argc, char* argv[], const char* key) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
+    if (argc < 2 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") {
         std::printf("用法:\n"
                     "  %s file <图片>\n"
                     "  %s pick\n"
-                    "  %s watch <关键字> [--rect=x,y,w,h] [--timeout=毫秒] [--interval=毫秒]\n",
+                    "  %s watch <关键字> [--rect=x,y,w,h] [--timeout=毫秒] [--interval=毫秒]\n"
+                    "  OCR options: --device=<cpu|cuda> --gpu-device=<n> (default cpu, GPU 0)\n",
                     argv[0], argv[0], argv[0]);
-        return 1;
+        return argc < 2 ? 1 : 0;
     }
     const std::string mode = argv[1];
 
     ocr::OCR e;
     std::string err;
+    OCRDevice device = OCRDevice::CPU;
+    int deviceId = 0;
+    if (!parseOcrDeviceArgs(argc, argv, device, deviceId, err)) {
+        std::fprintf(stderr, "[args] %s\n", err.c_str());
+        return 1;
+    }
     if (!e.loadDll("ocr.dll", &err)) {
         std::fprintf(stderr, "load dll: %s\n", err.c_str());
         return 2;
     }
-    if (!e.init("", "", "", 2, 8, 0, 0.5, &err)) {
+    if (!e.captureInit(&err)) {
+        std::fprintf(stderr, "capture init: %s\n", err.c_str());
+        return 2;
+    }
+    ocr::InitOptions options;
+    options.threads = 8;
+    options.device = static_cast<ocr::Device>(device);
+    options.gpuDeviceId = deviceId;
+    if (!e.init(options, &err)) {
         std::fprintf(stderr, "init: %s\n", err.c_str());
         return 2;
     }
     std::printf("sdk version: %s\n", e.version().c_str());
+    std::printf("backend: %s, gpu-device: %d\n", ocrDeviceName(device), deviceId);
 
     if (mode == "file" && argc >= 3) {
         std::vector<ocr::Line> lines;

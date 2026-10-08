@@ -61,6 +61,15 @@ int main(int argc, char* argv[]) {
 
     SetProcessDPIAware();
     SetConsoleOutputCP(CP_UTF8);
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            std::printf("Usage: ocrmon [--rect=x,y,w,h] [--once] [--interval-ms=300]\n"
+                        "  --det=<onnx> --rec=<onnx> --dict=<txt> --score=<num> --threads=<num>\n"
+                        "  --norm=<0|2> --det-limit=<n>\n"
+                        "  --device=<cpu|cuda> --gpu-device=<n> (default cpu, GPU 0; gpu=cuda)\n");
+            return 0;
+        }
+    }
 
     const int intervalMs =
         std::max(0, std::stoi(valueOf("--interval-ms", "300")));
@@ -71,6 +80,11 @@ int main(int argc, char* argv[]) {
     }();
 
     OCRConfig cfg;
+    std::string deviceErr;
+    if (!parseOcrDeviceArgs(argc, argv, cfg.device, cfg.gpuDeviceId, deviceErr)) {
+        std::fprintf(stderr, "[args] %s\n", deviceErr.c_str());
+        return 1;
+    }
     cfg.detModelPath = valueOf("--det", "models/onnx/v6_det_tiny.onnx");
     cfg.recModelPath = valueOf("--rec", "models/onnx/v6_rec_tiny.onnx");
     cfg.dictPath = valueOf("--dict", "models/onnx/v6_tiny_dict.txt");
@@ -105,6 +119,7 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "[load] %s\n", err.c_str());
         return 2;
     }
+    std::printf("backend: %s, gpu-device: %d\n", ocrDeviceName(cfg.device), cfg.gpuDeviceId);
     const bool trace = std::getenv("OCR_TRACE") != nullptr;
     if (trace) {
         CreateDirectoryA("images", nullptr);

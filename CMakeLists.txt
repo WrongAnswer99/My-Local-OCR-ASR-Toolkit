@@ -27,11 +27,20 @@ set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 # ---- ONNX Runtime(CPU 预编译包) ----
 # 编译期只需 include/ 下的 C API 头; 运行期由 onnx_session.cpp
 # LoadLibrary(onnxruntime.dll) 延迟加载, 因此还要 lib/onnxruntime.dll。
-set(ONNXRUNTIME_DIR "${THIRD_PARTY}/onnxruntime")
+set(OCR_RUNTIME "cpu" CACHE STRING "Runtime package to deploy: cpu or cuda")
+set_property(CACHE OCR_RUNTIME PROPERTY STRINGS cpu cuda)
+if(OCR_RUNTIME STREQUAL "cpu")
+  set(ORT_DEFAULT_DIR "${THIRD_PARTY}/onnxruntime")
+elseif(OCR_RUNTIME STREQUAL "cuda")
+  set(ORT_DEFAULT_DIR "${THIRD_PARTY}/onnxruntime-gpu")
+else()
+  message(FATAL_ERROR "OCR_RUNTIME must be cpu or cuda")
+endif()
+set(ONNXRUNTIME_DIR "${ORT_DEFAULT_DIR}" CACHE PATH "ONNX Runtime release root (include/ and lib/)")
 if(NOT EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_c_api.h")
     message(FATAL_ERROR
-        "onnxruntime not found in third_party/onnxruntime.\n"
-        "Please download the ONNX Runtime (windows x64 CPU) release zip from:\n"
+        "onnxruntime headers not found in ${ONNXRUNTIME_DIR}.\n"
+        "Please download the ONNX Runtime (windows x64 ${OCR_RUNTIME}) release zip from:\n"
         "  https://github.com/microsoft/onnxruntime/releases\n"
         "and extract it so that include/ and lib/ land under:\n"
         "  ${ONNXRUNTIME_DIR}")
@@ -43,6 +52,22 @@ if(NOT EXISTS "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll")
         "folder of the ONNX Runtime release zip (see above).")
 endif()
 message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_DIR}/include")
+if(OCR_RUNTIME STREQUAL "cuda")
+  foreach(provider onnxruntime_providers_shared onnxruntime_providers_cuda)
+    if(NOT EXISTS "${ONNXRUNTIME_DIR}/lib/${provider}.dll")
+      message(FATAL_ERROR "GPU runtime requires ${ONNXRUNTIME_DIR}/lib/${provider}.dll")
+    endif()
+  endforeach()
+elseif(EXISTS "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_cuda.dll")
+  message(FATAL_ERROR "CPU package selected but ONNXRUNTIME_DIR contains CUDA. Use OCR_RUNTIME=cuda (and --device=cpu if desired), or a CPU runtime directory.")
+endif()
+message(STATUS "Deploying ${OCR_RUNTIME} runtime from ${ONNXRUNTIME_DIR}")
+set(OCR_CUDA_DLL_DIR "" CACHE PATH "Optional flat CUDA/cuDNN DLL directory to deploy with the GPU runtime")
+if(OCR_CUDA_DLL_DIR)
+  if(NOT OCR_RUNTIME STREQUAL "cuda" OR NOT IS_DIRECTORY "${OCR_CUDA_DLL_DIR}")
+    message(FATAL_ERROR "OCR_CUDA_DLL_DIR requires OCR_RUNTIME=cuda and an existing directory")
+  endif()
+endif()
 
 # ---- stb(header-only 图像编解码) ----
 set(STB_DIR "${THIRD_PARTY}/stb")
@@ -90,7 +115,7 @@ target_link_libraries(ppocr_onnx PRIVATE ocr)
 
 # ---- 屏幕区域监听 OCR ----
 add_executable(ocrwatch src/ocrwatch.cpp src/screen.cpp)
-target_link_libraries(ocrwatch PRIVATE ocr user32 gdi32)
+target_link_libraries(ocrwatch PRIVATE ocr user32 gdi32 shell32)
 
 # ---- 框选区域工具(纯 Win32) ----
 add_executable(region_picker src/region_picker.cpp src/region_select.cpp)
@@ -102,7 +127,7 @@ target_link_libraries(screen_point_picker PRIVATE user32 gdi32)
 
 # ---- 演示: 框选后持续 OCR ----
 add_executable(ocrmon src/ocrmon.cpp src/region_select.cpp src/screen.cpp)
-target_link_libraries(ocrmon PRIVATE ocr user32 gdi32)
+target_link_libraries(ocrmon PRIVATE ocr user32 gdi32 shell32)
 
 # ---- SDK 动态库(对外分发: ocr.dll + sdk/ocr.hpp) ----
 # C ABI 导出(见 src/ocr_api.hpp); 静态链接 gcc 运行库, 便于对方免装运行库。
@@ -120,21 +145,49 @@ set_target_properties(ocr_sdk PROPERTIES OUTPUT_NAME ocr PREFIX "")
 
 # ---- SDK 用法示例(不链接 dll, 运行时 LoadLibrary) ----
 add_executable(api_demo sdk/examples/api_demo.cpp)
+add_executable(gpu_example sdk/examples/gpu_example.cpp)
 
-target_compile_options(ocr PRIVATE -O2)
-target_compile_options(ppocr_onnx PRIVATE -O2)
-target_compile_options(ocrwatch PRIVATE -O2)
-target_compile_options(region_picker PRIVATE -O2)
-target_compile_options(screen_point_picker PRIVATE -O2)
-target_compile_options(ocrmon PRIVATE -O2)
-target_compile_options(ocr_sdk PRIVATE -O2 -static -static-libgcc -static-libstdc++)
-target_compile_options(api_demo PRIVATE -O2)
+foreach(target ocr ppocr_onnx ocrwatch region_picker screen_point_picker ocrmon ocr_sdk api_demo gpu_example)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /O2 /utf-8)
+  else()
+    target_compile_options(${target} PRIVATE -O2)
+    if(MINGW)
+      # Consumers need no MinGW runtime DLLs, including for the SDK.
+      target_link_options(${target} PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+  endif()
+endforeach()
 
 # 运行目录放一份 onnxruntime.dll，程序启动时用 LoadLibrary 加载
-foreach(target ppocr_onnx ocrwatch ocrmon api_demo)
-  add_custom_command(TARGET ${target} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${ONNXRUNTIME_DIR}/lib/onnxruntime.dll
-            $<TARGET_FILE_DIR:${target}>/onnxruntime.dll
-  )
+file(GLOB ORT_RUNTIME_DLLS CONFIGURE_DEPENDS "${ONNXRUNTIME_DIR}/lib/*.dll")
+if(OCR_CUDA_DLL_DIR)
+  file(GLOB CUDA_RUNTIME_DLLS CONFIGURE_DEPENDS "${OCR_CUDA_DLL_DIR}/*.dll")
+  list(APPEND ORT_RUNTIME_DLLS ${CUDA_RUNTIME_DLLS})
+endif()
+get_property(OCR_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(OCR_MULTI_CONFIG)
+  set(OCR_RUNTIME_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+else()
+  set(OCR_RUNTIME_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+# Copy once, before consumers build: parallel post-build copies of the large
+# CUDA libraries into the same directory can race with each other.
+add_custom_target(ocr_runtime ALL
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${OCR_RUNTIME_OUTPUT_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ORT_RUNTIME_DLLS} "${OCR_RUNTIME_OUTPUT_DIR}"
+)
+foreach(target ppocr_onnx ocrwatch ocrmon api_demo gpu_example ocr_sdk)
+  add_dependencies(${target} ocr_runtime)
 endforeach()
+
+include(CTest)
+if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME ocr_integration
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration.py
+              --bin-dir $<TARGET_FILE_DIR:ppocr_onnx> --runtime ${OCR_RUNTIME})
+    set_tests_properties(ocr_integration PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 180)
+  endif()
+endif()

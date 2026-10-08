@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "image.hpp"
+#include "ocr_device.hpp"
 
 struct OCRBoxPt {
     double x = 0.0;
@@ -26,6 +27,8 @@ struct OCRConfig {
     std::string clsModelPath;  // 可选：文本行方向分类(0/180)，传空表示不使用
     bool useCls = false;
     int threads = 0;  // 0 = onnxruntime 默认
+    OCRDevice device = OCRDevice::CPU;
+    int gpuDeviceId = 0;  // CUDA device index; ignored on CPU
     double textScore = 0.5;  // 低于该置信度的结果丢弃
     int detLimitSideLen = 0;
     // 检测输入短边策略: 0=按原尺寸直接识别(推荐 ROI 场景);
