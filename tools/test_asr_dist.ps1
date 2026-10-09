@@ -1,4 +1,4 @@
-# Copied into dist/test_asr.ps1 by make_dist.ps1. No project/Python/ffmpeg runtime.
+﻿# Copied into dist/test_asr.ps1 by make_dist.ps1. No project/Python/ffmpeg runtime.
 param([ValidateRange(1,10)][int]$Repeat=1,[string]$ResumeReportDir='')
 $ErrorActionPreference='Stop'
 $dist=$PSScriptRoot
@@ -58,10 +58,10 @@ public sealed class AsrDistTest : IDisposable {
             Options options=new Options();defaults(ref options);
             if(options.size!=Marshal.SizeOf(typeof(Options)))throw new Exception("Options ABI mismatch");
             byte[] error=new byte[2048];
-            options.device=1;
+            options.device=2;
             IntPtr invalid=create(ref options,error,error.Length);
             if(invalid!=IntPtr.Zero){destroy(invalid);throw new Exception("Unsupported device must fail");}
-            if(!Error(error).Contains("CPU only"))throw new Exception("Missing CPU-only device error");
+            if(!Error(error).Contains("device"))throw new Exception("Missing invalid-device error");
             defaults(ref options);options.threads=8;
             Stopwatch timer=Stopwatch.StartNew();engine=create(ref options,error,error.Length);timer.Stop();init_ms=timer.Elapsed.TotalMilliseconds;
             if(engine==IntPtr.Zero)throw new Exception(Error(error));

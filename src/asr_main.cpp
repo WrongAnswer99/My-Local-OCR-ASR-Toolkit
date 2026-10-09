@@ -29,7 +29,8 @@ void write(const std::string& path, const std::string& content) {
 void help() {
     std::cout << "Usage: asr_cli <audio-file> [--model=path] [--language=auto|zh|en|...]\n"
                  "                [--threads=0..256] [--output=text.txt] [--json=result.json]\n"
-                 "Offline OpenAI Whisper full-file transcription (CPU).\n"
+                 "                [--device=cpu|gpu]\n"
+                 "Offline OpenAI Whisper full-file transcription (CPU/CUDA SDK).\n"
                  "WAV/MP3/M4A and other installed Windows Media Foundation codecs.\n"
                  "Default model: models/whisper/ggml-small-q5_1.bin beside asr.dll.\n"
                  "Stdout: complete UTF-8 transcript. Stderr: diagnostics and timings.\n";
@@ -45,6 +46,11 @@ int wmain(int argc, wchar_t** argv) {
             if (argument == "--help" || argument == "-h") { help(); return 0; }
             if (argument.rfind("--model=", 0) == 0) { options.model = argument.substr(8); if (options.model.empty()) throw std::runtime_error("--model is empty"); }
             else if (argument.rfind("--language=", 0) == 0) { options.language = argument.substr(11); if (options.language.empty()) throw std::runtime_error("--language is empty"); }
+            else if (argument.rfind("--device=", 0) == 0) {
+                const auto value = argument.substr(9);
+                if (value != "cpu" && value != "gpu") throw std::runtime_error("--device must be cpu or gpu");
+                options.device = value == "gpu" ? 1 : 0;
+            }
             else if (argument.rfind("--threads=", 0) == 0) {
                 const std::string value = argument.substr(10);
                 if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) throw std::runtime_error("invalid --threads");
@@ -82,8 +88,9 @@ int wmain(int argc, wchar_t** argv) {
         if (!output.empty()) write(output, transcript.text + "\n");
         if (!jsonPath.empty()) {
             std::ostringstream document;
-            document << std::setprecision(12) << "{\n  \"backend\": \"whisper.cpp\", \"device\": \"cpu\",\n"
+            document << std::setprecision(12) << "{\n  \"backend\": \"whisper.cpp\", \"device\": " << json(options.device ? "gpu" : "cpu") << ",\n"
                      << "  \"language\": " << json(transcript.language) << ", \"text\": " << json(transcript.text)
+                     << ",\n  \"utf8_replacements\": " << transcript.utf8Replacements
                      << ",\n  \"init_ms\": " << initMs << ", \"audio_ms\": " << transcript.audioMs
                      << ", \"decode_ms\": " << transcript.decodeMs << ", \"transcribe_ms\": " << transcript.transcribeMs << ",\n  \"segments\": [";
             for (size_t i = 0; i < transcript.segments.size(); ++i) {
@@ -93,8 +100,8 @@ int wmain(int argc, wchar_t** argv) {
             document << "\n  ]\n}\n"; write(jsonPath, document.str());
         }
         std::cout << transcript.text << '\n';
-        std::fprintf(stderr, "[asr] device=cpu language=%s audio=%.2f ms init=%.2f ms decode=%.2f ms transcribe=%.2f ms segments=%zu\n",
-                     transcript.language.c_str(), transcript.audioMs, initMs, transcript.decodeMs, transcript.transcribeMs, transcript.segments.size());
+        std::fprintf(stderr, "[asr] device=%s language=%s audio=%.2f ms init=%.2f ms decode=%.2f ms transcribe=%.2f ms segments=%zu\n",
+                     options.device ? "gpu" : "cpu", transcript.language.c_str(), transcript.audioMs, initMs, transcript.decodeMs, transcript.transcribeMs, transcript.segments.size());
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "[asr] %s\n", e.what()); return 1; }
 }

@@ -45,7 +45,7 @@ def main():
         return value
 
     for field, value, expected in [("struct_size", 0, b"struct_size"),
-                                   ("device", 1, b"CPU only"),
+                                   ("device", 2, b"device"),
                                    ("threads", -1, b"threads"),
                                    ("language", b"invalid-language", b"language"),
                                    ("model", b"does-not-exist.bin", b"model")]:

@@ -1,4 +1,4 @@
-# Prepare source/model inside the project. No Python installation or system PATH changes.
+﻿# Prepare source/model inside the project. No Python installation or system PATH changes.
 param([ValidateSet('https://huggingface.co','https://hf-mirror.com')][string]$ModelHost='https://huggingface.co')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
@@ -44,4 +44,4 @@ if(-not (Test-Path -LiteralPath $modelLicense)){
 }
 [IO.File]::WriteAllText((Join-Path $models 'MODEL.txt'),"model=$modelName`r`nsha256=$modelSha`r`nsource=https://huggingface.co/ggerganov/whisper.cpp`r`n")
 Write-Host "Whisper $version and multilingual small Q5_1 model ready."
-Write-Host 'Configure with -DENABLE_WHISPER=ON; ASR uses CPU in this first version.'
+Write-Host 'Configure with -DENABLE_WHISPER=ON; Set ASR_RUNTIME=cpu or cuda; CUDA also needs tools/setup_whisper_gpu.ps1.'

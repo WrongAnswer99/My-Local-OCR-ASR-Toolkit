@@ -2,7 +2,8 @@
 #include <windows.h>
 #include "asr_api.hpp"
 #include "audio.hpp"
-#include <whisper.h>
+#include "asr_utf8.hpp"
+#include "whisper_runtime.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -19,6 +20,7 @@ namespace {
 struct Engine {
     whisper_context* context = nullptr;
     int threads = 8;
+    int device = 0;
     std::string language;
     std::mutex mutex;
     ~Engine() { if (context) whisper_free(context); }
@@ -27,6 +29,7 @@ struct Segment { int64_t start = 0, end = 0; std::string text; };
 struct Result {
     std::string text, language;
     std::vector<Segment> segments;
+    int utf8Replacements = 0;
     double audioMs = 0, decodeMs = 0, transcribeMs = 0;
 };
 void errorText(char* out, int capacity, const std::string& text) {
@@ -54,7 +57,13 @@ double elapsed(std::chrono::steady_clock::time_point start, std::chrono::steady_
 }
 
 extern "C" {
-const char* asr_version() { return "Whisper file ASR SDK 0.1 (whisper.cpp " ASR_WHISPER_VERSION ", CPU)"; }
+const char* asr_version() {
+#ifdef ASR_CUDA_RUNTIME
+    return "Whisper file ASR SDK 0.2 (whisper.cpp " ASR_WHISPER_VERSION ", CPU/CUDA)";
+#else
+    return "Whisper file ASR SDK 0.2 (whisper.cpp " ASR_WHISPER_VERSION ", CPU)";
+#endif
+}
 void asr_default_options(AsrOptions* options) {
     if (!options) return;
     std::memset(options, 0, sizeof(*options));
@@ -66,7 +75,10 @@ AsrHandle asr_create(const AsrOptions* given, char* error, int capacity) {
         AsrOptions defaults; asr_default_options(&defaults);
         const AsrOptions* options = given ? given : &defaults;
         if (options->struct_size < sizeof(AsrOptions)) throw std::runtime_error("AsrOptions.struct_size is too small");
+        if (options->device < 0 || options->device > 1) throw std::runtime_error("device must be 0 (CPU) or 1 (CUDA)");
+#ifndef ASR_CUDA_RUNTIME
         if (options->device != 0) throw std::runtime_error("this Whisper build supports CPU only (device=0)");
+#endif
         if (options->threads < 0 || options->threads > 256) throw std::runtime_error("threads must be 0..256");
         auto engine = std::make_unique<Engine>();
         engine->threads = options->threads ? options->threads : int(std::min(8u, std::max(1u, std::thread::hardware_concurrency())));
@@ -83,17 +95,32 @@ AsrHandle asr_create(const AsrOptions* given, char* error, int capacity) {
         input.seekg(0);
         if (!input.read(data.data(), length)) throw std::runtime_error("cannot read Whisper model");
         auto params = whisper_context_default_params();
-        params.use_gpu = false;
+        params.use_gpu = options->device == 1;
+#ifdef ASR_CUDA_RUNTIME
+        if (params.use_gpu) asr_runtime::api().requireCuda();
+        asr_runtime::cudaUsed = false;
+        asr_runtime::cudaFailed = false;
+#endif
         engine->context = whisper_init_from_buffer_with_params(data.data(), data.size(), params);
         if (!engine->context) throw std::runtime_error("Whisper model initialization failed; check model format");
+#ifdef ASR_CUDA_RUNTIME
+        if (params.use_gpu && (!asr_runtime::cudaUsed || asr_runtime::cudaFailed))
+            throw std::runtime_error("CUDA backend initialization failed; CPU fallback rejected");
+#endif
+        engine->device = options->device;
         if (!whisper_is_multilingual(engine->context) && engine->language != "auto" && engine->language != "en")
             throw std::runtime_error("an English-only model cannot transcribe the requested language");
         return engine.release();
     } catch (const std::exception& exception) { errorText(error, capacity, exception.what()); return nullptr; }
     catch (...) { errorText(error, capacity, "unexpected Whisper initialization failure"); return nullptr; }
 }
+int asr_device(AsrHandle handle) { return handle ? static_cast<Engine*>(handle)->device : -1; }
 void asr_destroy(AsrHandle handle) { delete static_cast<Engine*>(handle); }
 AsrResult asr_transcribe_file(AsrHandle handle, const char* path, char* error, int capacity) {
+    return asr_transcribe_file_with_progress(handle, path, nullptr, nullptr, error, capacity);
+}
+AsrResult asr_transcribe_file_with_progress(AsrHandle handle, const char* path, AsrProgressFn callback,
+                                          void* user, char* error, int capacity) {
     errorText(error, capacity, "");
     try {
         if (!handle) throw std::runtime_error("ASR handle is null");
@@ -116,6 +143,16 @@ AsrResult asr_transcribe_file(AsrHandle handle, const char* path, char* error, i
         params.temperature = 0.0f;
         params.temperature_inc = 0.0f;
         params.suppress_nst = true;
+        struct Progress { AsrProgressFn callback; void* user; int last = -1; } progress{callback, user};
+        if (callback) {
+            params.progress_callback_user_data = &progress;
+            params.progress_callback = [](whisper_context*, whisper_state*, int percent, void* data) {
+                auto* p = static_cast<Progress*>(data);
+                percent = std::clamp(percent, 0, 99);
+                if (percent > p->last) { p->last = percent; p->callback(percent, p->user); }
+            };
+            progress.last = 0; callback(0, user);
+        }
         // duration_ms=0 processes the complete input, including subsequent
         // Whisper 30-second windows. Results from prior calls are not reused.
         const int status = whisper_full(engine->context, params, samples.data(), int(samples.size()));
@@ -132,9 +169,16 @@ AsrResult asr_transcribe_file(AsrHandle handle, const char* path, char* error, i
             item.start = std::clamp<int64_t>(whisper_full_get_segment_t0(engine->context, i) * 10, 0, int64_t(result->audioMs));
             item.end = std::clamp<int64_t>(whisper_full_get_segment_t1(engine->context, i) * 10, item.start, int64_t(result->audioMs));
             item.text = text ? text : "";
-            result->text += item.text;
-            result->segments.push_back(std::move(item));
+                        result->segments.push_back(std::move(item));
         }
+        std::vector<std::string> texts;
+        for (const auto& item : result->segments) texts.push_back(item.text);
+        result->utf8Replacements = asrNormalizeUtf8(texts);
+        for (size_t i = 0; i < texts.size(); ++i) {
+            result->segments[i].text = std::move(texts[i]);
+            result->text += result->segments[i].text;
+        }
+        if (callback) callback(100, user);
         return result.release();
     } catch (const std::exception& exception) { errorText(error, capacity, exception.what()); return nullptr; }
     catch (...) { errorText(error, capacity, "unexpected transcription failure"); return nullptr; }
@@ -142,6 +186,7 @@ AsrResult asr_transcribe_file(AsrHandle handle, const char* path, char* error, i
 void asr_free_result(AsrResult handle) { delete static_cast<Result*>(handle); }
 const char* asr_result_text(AsrResult handle) { return handle ? static_cast<Result*>(handle)->text.c_str() : ""; }
 const char* asr_result_language(AsrResult handle) { return handle ? static_cast<Result*>(handle)->language.c_str() : ""; }
+int asr_result_utf8_replacements(AsrResult handle) { return handle ? static_cast<Result*>(handle)->utf8Replacements : 0; }
 int asr_result_segment_count(AsrResult handle) { return handle ? int(static_cast<Result*>(handle)->segments.size()) : 0; }
 const char* asr_result_segment_text(AsrResult handle, int index) { const auto* s = segment(handle, index); return s ? s->text.c_str() : ""; }
 int64_t asr_result_segment_start_ms(AsrResult handle, int index) { const auto* s = segment(handle, index); return s ? s->start : 0; }

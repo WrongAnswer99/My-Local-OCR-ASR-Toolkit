@@ -4,7 +4,7 @@
 
 > Windows + C++17 + CMake 构建；默认 CPU，支持 NVIDIA CUDA GPU。CPU 版保持无需 GPU 依赖。GPU 构建、CLI、C/C++ SDK 和发布步骤见 [GPU 使用指南](docs/GPU.md)。
 
-新增可选的本地 Whisper 整段音频转文字：`asr_cli.exe`、`asr.dll` 和 `asr.hpp`，支持自动检测语言、中文路径和完整文字/分段时间戳。第一版使用 CPU，运行无需 API Key、Python 或外部 FFmpeg，见 [ASR 使用指南](docs/ASR.md)。
+新增可选的本地 Whisper 整段音频转文字：`asr_cli.exe`、`asr.dll` 、`asr.hpp` 和 Python `asr.py`，支持自动检测语言、中文路径和完整文字/分段时间戳。支持 CPU 和 NVIDIA CUDA GPU，运行无需 API Key、Python 或外部 FFmpeg，见 [ASR 使用指南](docs/ASR.md)。
 
 ---
 

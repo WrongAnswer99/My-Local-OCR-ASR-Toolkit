@@ -19,6 +19,10 @@ $cache = Join-Path $build 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cache)) { $cache = Join-Path (Split-Path -Parent $build) 'CMakeCache.txt' }
 if (-not (Test-Path -LiteralPath $cache)) { throw "Missing build configuration: $cache" }
 $cacheText = Get-Content -LiteralPath $cache -Raw
+if ($cacheText -match '(?m)^ASR_RUNTIME:STRING=cuda\r?$') {
+    throw 'Use tools/make_asr_dist.ps1 for CUDA ASR; package separately from CUDA OCR DLLs'
+}
+
 $runtimeMatch = [regex]::Match($cacheText, '(?m)^OCR_RUNTIME:STRING=([^\r\n]+)')
 if (-not $runtimeMatch.Success -or $runtimeMatch.Groups[1].Value -ne $Runtime) {
     throw "Build runtime does not match -Runtime $Runtime. Reconfigure CMake first."
@@ -94,7 +98,7 @@ if($cacheText -match '(?m)^ENABLE_WHISPER:BOOL=ON\r?$'){
         if(-not (Test-Path -LiteralPath (Join-Path $build $name))){throw "Whisper build output missing $name"}
         Copy-Item -LiteralPath (Join-Path $build $name) -Destination $dist -Force
     }
-    foreach($entry in @(@('sdk\asr.hpp','asr.hpp'),@('src\asr_api.hpp','asr_api.hpp'),@('sdk\examples\asr_example.cpp','asr_example.cpp'),@('tools\test_asr_dist.ps1','test_asr.ps1'))){
+    foreach($entry in @(@('sdk\asr.py','asr.py'),@('sdk\asr.hpp','asr.hpp'),@('src\asr_api.hpp','asr_api.hpp'),@('sdk\examples\asr_example.cpp','asr_example.cpp'),@('tools\test_asr_dist.ps1','test_asr.ps1'))){
         Copy-Item -LiteralPath (Join-Path $root $entry[0]) -Destination (Join-Path $dist $entry[1]) -Force
     }
     $asrModels=Join-Path $dist 'models\whisper'
@@ -117,5 +121,6 @@ if($cacheText -match '(?m)^ENABLE_WHISPER:BOOL=ON\r?$'){
         Get-ChildItem -LiteralPath $audio -File | Copy-Item -Destination $samples -Force
     }
 }
+
 Set-Content -LiteralPath (Join-Path $dist 'runtime.txt') -Value "runtime=$Runtime" -Encoding UTF8
 Write-Host "Distribution ready: $dist ($Runtime)"
