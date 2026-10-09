@@ -197,7 +197,9 @@ C++ 设置 `asr::Options::device = 1`，用 `engine.device()` 查询设备；`tr
 .\dist-asr-gpu\asr_cli.exe audio.wav --device=cpu --language=zh
 ```
 
-### SDK 接入后的测量
+### SDK 接入后的测量（0.2 历史数据）
+
+以下数据来自旧版，其中连续“不”属于后来确认的重复故障，不能据此认为识别正确。0.3 已修复解码参数并加入 VAD；新的验证见 [重复识别修复记录](ASR-REPETITION.md)。
 
 消费项目导出的 `dist/asr.py` / `dist/asr.dll`，同一模型、zh、8 线程，19.203 秒 BV1ewwxesEu4 音轨，一次创建引擎并转写：
 
@@ -222,3 +224,18 @@ python tests/asr_sdk_integration.py --dist-dir dist-asr-gpu --audio tests/audio/
 ## 识别文字的 UTF-8 完整性
 
 SDK 会跨分段保留完整字符，把无法还原的字节序列标记为 U+FFFD（�），保证全文和分段可严格解码为 UTF-8。C ABI 的 `asr_result_utf8_replacements`、Python 的 `utf8_replacements`、C++ 的 `utf8Replacements` 返回修复数量；默认正常文本为 0。复现、修复和长视频验证见 [UTF-8 故障记录](ASR-UTF8.md)。
+
+
+## SDK 0.3：长音频重复修复
+
+默认使用 5 候选 beam search、禁止滚动文字提示、恢复温度失败回退。分发新增 models/whisper/ggml-silero-v6.2.0.bin，自动启用语音检测，并保留原音频时间轴。完整修复需要保留该模型；缺失时只应用解码参数修复。模型与 Silero MIT 许可证由 tools/setup_whisper_vad.ps1 准备，setup_whisper.ps1 会调用它。
+
+SDK 默认 auto，消费者指定 zh 时应确保音频是中文；英文、日文、俄文分别为 en/ja/ru。这是语音语言选择，不是翻译。困难窗口可能进行温度重试，不能承诺所有音频都在 CPU/GPU 间逐字一致。
+
+复现回归：
+
+~~~powershell
+python tests/asr_repetition_integration.py --dist-dir dist-asr-gpu --audio "D:\\Tests\\regression.wav" --language zh --device gpu --report ".source/repetition.json"
+~~~
+
+[排查过程与完整视频测试](ASR-REPETITION.md)。

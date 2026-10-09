@@ -22,6 +22,7 @@ struct Engine {
     int threads = 8;
     int device = 0;
     std::string language;
+    std::string vadModel;
     std::mutex mutex;
     ~Engine() { if (context) whisper_free(context); }
 };
@@ -47,6 +48,31 @@ std::filesystem::path defaultModel() {
     if (!count || count >= 32768) throw std::runtime_error("cannot resolve ASR module directory");
     return std::filesystem::path(std::wstring(filename, count)).parent_path() / L"models/whisper/ggml-small-q5_1.bin";
 }
+std::string vadPathText(const std::filesystem::path& path) {
+#ifdef ASR_CUDA_RUNTIME
+    // The pinned official MSVC DLL opens UTF-8 paths with a wide ifstream.
+    return path.u8string();
+#else
+    // The static MinGW VAD loader uses narrow ifstream. Use a short path when
+    // available, then encode in the process's active Windows code page.
+    std::wstring native = path.wstring();
+    const DWORD capacity = GetShortPathNameW(path.c_str(), nullptr, 0);
+    if (capacity) {
+        std::wstring shortened(capacity, L'\0');
+        const DWORD written = GetShortPathNameW(path.c_str(), shortened.data(), capacity);
+        if (written && written < capacity) { shortened.resize(written); native = std::move(shortened); }
+    }
+    const UINT codepage = GetACP();
+    BOOL replaced = FALSE;
+    BOOL* check = codepage == CP_UTF8 ? nullptr : &replaced;
+    const int count = WideCharToMultiByte(codepage, 0, native.data(), int(native.size()), nullptr, 0, nullptr, check);
+    if (!count || replaced) throw std::runtime_error("VAD model path cannot be represented by the Windows code page");
+    std::string result(size_t(count), '\0');
+    if (!WideCharToMultiByte(codepage, 0, native.data(), int(native.size()), result.data(), count, nullptr, check) || replaced)
+        throw std::runtime_error("cannot encode VAD model path");
+    return result;
+#endif
+}
 const Segment* segment(AsrResult handle, int index) {
     const auto* result = static_cast<const Result*>(handle);
     return result && index >= 0 && size_t(index) < result->segments.size() ? &result->segments[size_t(index)] : nullptr;
@@ -59,9 +85,9 @@ double elapsed(std::chrono::steady_clock::time_point start, std::chrono::steady_
 extern "C" {
 const char* asr_version() {
 #ifdef ASR_CUDA_RUNTIME
-    return "Whisper file ASR SDK 0.2 (whisper.cpp " ASR_WHISPER_VERSION ", CPU/CUDA)";
+    return "Whisper file ASR SDK 0.3 (whisper.cpp " ASR_WHISPER_VERSION ", CPU/CUDA)";
 #else
-    return "Whisper file ASR SDK 0.2 (whisper.cpp " ASR_WHISPER_VERSION ", CPU)";
+    return "Whisper file ASR SDK 0.3 (whisper.cpp " ASR_WHISPER_VERSION ", CPU)";
 #endif
 }
 void asr_default_options(AsrOptions* options) {
@@ -94,6 +120,10 @@ AsrHandle asr_create(const AsrOptions* given, char* error, int capacity) {
         std::vector<char> data(static_cast<size_t>(length));
         input.seekg(0);
         if (!input.read(data.data(), length)) throw std::runtime_error("cannot read Whisper model");
+        auto vadPath = path.parent_path() / L"ggml-silero-v6.2.0.bin";
+        if (!std::filesystem::is_regular_file(vadPath))
+            vadPath = defaultModel().parent_path() / L"ggml-silero-v6.2.0.bin";
+        if (std::filesystem::is_regular_file(vadPath)) engine->vadModel = vadPathText(vadPath);
         auto params = whisper_context_default_params();
         params.use_gpu = options->device == 1;
 #ifdef ASR_CUDA_RUNTIME
@@ -133,16 +163,31 @@ AsrResult asr_transcribe_file_with_progress(AsrHandle handle, const char* path, 
         const auto start = std::chrono::steady_clock::now();
         if (!decodeAudioFile(path, samples, decodeError)) throw std::runtime_error(decodeError);
         const auto decoded = std::chrono::steady_clock::now();
-        auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        auto params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
+        params.beam_search.beam_size = 5;
         params.n_threads = engine->threads;
         params.language = engine->language.c_str();
         params.translate = false;
         params.print_progress = false; params.print_realtime = false; params.print_timestamps = false;
         params.print_special = false;
+        // no_context clears earlier API calls, not the rolling prompt inside
+        // this file. A bad segment must not condition every later window.
         params.no_context = true;
+        params.n_max_text_ctx = 0;
         params.temperature = 0.0f;
-        params.temperature_inc = 0.0f;
+        // Keep Whisper's quality-triggered fallback (entropy/log probability).
+        // Disabling it traps difficult/noisy windows in greedy repetition.
+        params.temperature_inc = 0.2f;
         params.suppress_nst = true;
+        // Skip non-speech before decoding; Whisper maps times back to the source.
+        if (!engine->vadModel.empty()) {
+            params.vad = true;
+            params.vad_model_path = engine->vadModel.c_str();
+            params.vad_params.threshold = 0.25f;
+            params.vad_params.min_speech_duration_ms = 100;
+            params.vad_params.min_silence_duration_ms = 300;
+            params.vad_params.speech_pad_ms = 300;
+        }
         struct Progress { AsrProgressFn callback; void* user; int last = -1; } progress{callback, user};
         if (callback) {
             params.progress_callback_user_data = &progress;
@@ -169,7 +214,7 @@ AsrResult asr_transcribe_file_with_progress(AsrHandle handle, const char* path, 
             item.start = std::clamp<int64_t>(whisper_full_get_segment_t0(engine->context, i) * 10, 0, int64_t(result->audioMs));
             item.end = std::clamp<int64_t>(whisper_full_get_segment_t1(engine->context, i) * 10, item.start, int64_t(result->audioMs));
             item.text = text ? text : "";
-                        result->segments.push_back(std::move(item));
+            result->segments.push_back(std::move(item));
         }
         std::vector<std::string> texts;
         for (const auto& item : result->segments) texts.push_back(item.text);

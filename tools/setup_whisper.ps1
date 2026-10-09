@@ -45,3 +45,5 @@ if(-not (Test-Path -LiteralPath $modelLicense)){
 [IO.File]::WriteAllText((Join-Path $models 'MODEL.txt'),"model=$modelName`r`nsha256=$modelSha`r`nsource=https://huggingface.co/ggerganov/whisper.cpp`r`n")
 Write-Host "Whisper $version and multilingual small Q5_1 model ready."
 Write-Host 'Configure with -DENABLE_WHISPER=ON; Set ASR_RUNTIME=cpu or cuda; CUDA also needs tools/setup_whisper_gpu.ps1.'
+
+& (Join-Path $PSScriptRoot 'setup_whisper_vad.ps1') -ModelHost $ModelHost

@@ -103,10 +103,11 @@ if($cacheText -match '(?m)^ENABLE_WHISPER:BOOL=ON\r?$'){
     }
     $asrModels=Join-Path $dist 'models\whisper'
     New-Item -ItemType Directory -Force -Path $asrModels | Out-Null
-    foreach($name in @('ggml-small-q5_1.bin','MODEL.txt','LICENSE')){
+    foreach($name in @('ggml-small-q5_1.bin','ggml-silero-v6.2.0.bin','MODEL.txt','VAD-MODEL.txt','LICENSE','Silero-LICENSE')){
         Copy-Item -LiteralPath (Join-Path $root "models\whisper\$name") -Destination $asrModels -Force
     }
     Copy-Item -LiteralPath (Join-Path $root 'docs\ASR.md') -Destination $docs -Force
+    Copy-Item -LiteralPath (Join-Path $root 'docs\ASR-REPETITION.md') -Destination $docs -Force
     $whisperMatch=[regex]::Match($cacheText,'(?m)^WHISPER_DIR:PATH=([^\r\n]+)')
     if(-not $whisperMatch.Success){throw 'WHISPER_DIR missing from build cache'}
     $whisper=Resolve-ProjectPath $whisperMatch.Groups[1].Value

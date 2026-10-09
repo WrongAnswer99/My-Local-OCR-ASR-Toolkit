@@ -30,12 +30,13 @@ $entries = @(
     @((Join-Path $root 'sdk/examples/asr_example.cpp'), 'asr_example.cpp'),
     @((Join-Path $root 'docs/ASR.md'), 'README-ASR.md'),
     @((Join-Path $root 'docs/ASR-UTF8.md'), 'ASR-UTF8.md'),
+    @((Join-Path $root 'docs/ASR-REPETITION.md'), 'ASR-REPETITION.md'),
     @((Join-Path $whisper 'LICENSE'), 'Whisper-LICENSE')
 )
 $ggmlLicense = Join-Path $whisper 'ggml/LICENSE'
 if (-not (Test-Path -LiteralPath $ggmlLicense)) { $ggmlLicense = Join-Path $whisper 'LICENSE' }
 $entries += ,@($ggmlLicense, 'GGML-LICENSE')
-foreach ($name in @('ggml-small-q5_1.bin', 'MODEL.txt', 'LICENSE')) {
+foreach ($name in @('ggml-small-q5_1.bin', 'ggml-silero-v6.2.0.bin', 'MODEL.txt', 'VAD-MODEL.txt', 'LICENSE', 'Silero-LICENSE')) {
     $entries += ,@((Join-Path $root "models/whisper/$name"), "models/whisper/$name")
 }
 if ($mode -eq 'cuda') {
@@ -57,7 +58,7 @@ foreach ($entry in $entries) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
     Copy-Item -LiteralPath $entry[0] -Destination $destination -Force
 }
-$manifest = @{ sdk = 'asr'; version = '0.2'; runtime = $mode; model = 'ggml-small-q5_1.bin'; files = @{} }
+$manifest = @{ sdk = 'asr'; version = '0.3'; runtime = $mode; model = 'ggml-small-q5_1.bin'; vad_model = 'ggml-silero-v6.2.0.bin'; files = @{} }
 foreach ($entry in $entries) {
     $manifest.files[$entry[1]] = (Get-FileHash -LiteralPath (Join-Path $dist $entry[1]) -Algorithm SHA256).Hash
 }
